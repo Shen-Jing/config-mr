@@ -56,16 +56,26 @@ Config: `.tmux.conf` (yank section) and `~/.tmux/bin/osc52-screen` (both in the 
 
 #### Fix
 
-`~/.tmux/bin/osc52-screen` reads stdin, base64-encodes it and writes the OSC52 sequence to the pane tty using tmux passthrough (every `ESC` inside the passthrough is doubled). If the client TERM is `screen*`, the sequence is additionally wrapped in a screen DCS.
+`~/.tmux/bin/osc52-screen [PANE_ID]` reads stdin, base64-encodes it and writes the OSC52 sequence to the pane tty using tmux passthrough (every `ESC` inside the passthrough is doubled). If the attached client runs inside GNU screen, the sequence is additionally wrapped in a screen DCS.
 
 ```tmux
 set -gq allow-passthrough on        # tmux >= 3.3, required for passthrough
 set -g set-clipboard on
-set -g @override_copy_command '~/.tmux/bin/osc52-screen'
-bind-key -T copy-mode-vi Enter send-keys -X copy-pipe-and-cancel '~/.tmux/bin/osc52-screen'
+set -g @override_copy_command '~/.tmux/bin/osc52-screen #{pane_id}'
+bind-key -T copy-mode-vi Enter send-keys -X copy-pipe-and-cancel '~/.tmux/bin/osc52-screen #{pane_id}'
+# optional: force screen wrapping instead of auto-detect (on|off|auto)
+# set -g @osc52_screen on
 ```
 
 Then reload: `tmux source-file ~/.tmux.conf`. Keys (vi mode): `prefix + [`, `V` select line, `y` or `Enter` copy.
+
+#### Pitfalls (things that worked from a shell but failed from the key binding)
+
+`y` / `Enter` run the script as a **tmux job**, not from your shell, so:
+
+- **Pass `#{pane_id}`.** A job has no current client, and its `$TMUX_PANE` is stale/wrong, so "the current pane" resolves to a random pane (possibly another session). `copy-pipe` expands formats in its command, so `#{pane_id}` gives the real pane.
+- **Do not detect screen with `#{client_termname}` / `$TERM`.** Empty in a job, and screen may be configured with `term xterm-256color`. The script checks for `STY=` in `/proc/<client_pid>/environ` instead (Linux only; falls back to `TERM=screen*`).
+- Several tmux servers can coexist (different `$TMUX` sockets, e.g. a tool-spawned server vs. your own). `tmux ...` run from another tool may talk to a different server than the one you are looking at; check `echo $TMUX`.
 
 #### Verify (step by step)
 
@@ -84,4 +94,5 @@ Notes:
 - Run the test in a pane that is actually visible on your attached client; passthrough output of a hidden pane is not forwarded.
 - The terminal must support OSC52 writes. [Tabby](https://github.com/Eugeny/tabby) does (`tabby-terminal/src/middleware/oscProcessing.ts`), but only for target `c`, and data over ~1KB is dropped (Tabby issue #10925). Long selections may not copy.
 - `tmux-yank` configs changed after the server started are not always re-applied; `tmux source-file` fixes it, otherwise restart the tmux server.
-- Needs a working shell `tmux` in `PATH` inside the copy command (the script calls `tmux display-message`).
+- The script calls `tmux` (needs it in `PATH` in the job environment).
+- Debugging a job: append a line such as `echo "pane=$pane tty=$pane_tty mode=$mode" >> /tmp/osc52-debug.log` before the final `case` in the script, press `y`, and read the log.
